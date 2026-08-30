@@ -170,6 +170,7 @@ namespace EmergencyLink
         public string ApprovedBy;
         public string ApprovedByRole;
         public DateTime? ApprovedAt;
+        public bool QuotaSettled;
         public readonly List<string> Initiators = new List<string>();
     }
 }

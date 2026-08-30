@@ -106,8 +106,10 @@ namespace EmergencyLink
             LinkClient teammate = null;
 
             AutoResetEvent playerAlerted = new AutoResetEvent(false);
-            AutoResetEvent remainingDeducted = new AutoResetEvent(false);
+            AutoResetEvent remainingDeductedAfterAck = new AutoResetEvent(false);
+            AutoResetEvent approvalCompleted = new AutoResetEvent(false);
             string alertBatch = "";
+            bool approveSent = false;
 
             try
             {
@@ -147,11 +149,18 @@ namespace EmergencyLink
                 organizer.MessageReceived += delegate(Dictionary<string, string> message)
                 {
                     if (Protocol.Get(message, "cmd") == "state" &&
-                        Protocol.Get(message, "batches").IndexOf("approved") >= 0 &&
                         Protocol.GetInt(message, "remaining", -1) == 0 &&
                         Protocol.GetInt(message, "usedOfficial", -1) == 1)
                     {
-                        remainingDeducted.Set();
+                        if (!approveSent)
+                        {
+                            remainingDeductedAfterAck.Set();
+                        }
+
+                        if (Protocol.Get(message, "batches").IndexOf("approved") >= 0)
+                        {
+                            approvalCompleted.Set();
+                        }
                     }
                 };
 
@@ -175,19 +184,21 @@ namespace EmergencyLink
                 teammate.Send(alert);
 
                 if (!playerAlerted.WaitOne(3000)) return 2;
+                if (!remainingDeductedAfterAck.WaitOne(3000)) return 3;
 
                 Dictionary<string, string> approve = new Dictionary<string, string>();
                 approve["cmd"] = "approve";
                 approve["batch"] = alertBatch;
+                approveSent = true;
                 organizer.Send(approve);
 
-                if (!remainingDeducted.WaitOne(3000)) return 3;
+                if (!approvalCompleted.WaitOne(3000)) return 4;
 
                 using (System.Net.WebClient webClient = new System.Net.WebClient())
                 {
                     webClient.Encoding = System.Text.Encoding.UTF8;
                     string json = webClient.DownloadString("http://127.0.0.1:" + server.ActualApiPort.ToString() + "/status");
-                    if (json.IndexOf("\"remainingOfficialCalls\":0") < 0) return 4;
+                    if (json.IndexOf("\"remainingOfficialCalls\":0") < 0) return 5;
                 }
                 return 0;
             }

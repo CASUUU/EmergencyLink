@@ -19,6 +19,7 @@ namespace EmergencyLink.Forms
         private Point _dragStart;
         private string _currentBatchId = "";
         private int _lastCount;
+        private bool _dismissedCurrentNotice;
         private Color _colorA;
         private Color _colorB;
 
@@ -72,7 +73,7 @@ namespace EmergencyLink.Forms
             _dismissButton.FlatAppearance.BorderSize = 0;
             _dismissButton.BackColor = Color.FromArgb(255, 232, 232);
             _dismissButton.ForeColor = Color.FromArgb(126, 22, 42);
-            _dismissButton.Click += delegate { Hide(); };
+            _dismissButton.Click += delegate { DismissNotice(); };
             Controls.Add(_dismissButton);
 
             MouseDown += StartDrag;
@@ -130,6 +131,7 @@ namespace EmergencyLink.Forms
         {
             if (batch == null) return;
             bool isNewOrRepeated = _currentBatchId != batch.Id || _lastCount != batch.Count;
+            if (isNewOrRepeated) _dismissedCurrentNotice = false;
             _currentBatchId = batch.Id;
             _lastCount = batch.Count;
 
@@ -138,6 +140,8 @@ namespace EmergencyLink.Forms
             if (!String.IsNullOrEmpty(batch.Initiators)) detail += "\r\n发起人：" + batch.Initiators;
             if (batch.Count > 1) detail += "    同批提醒：" + batch.Count.ToString() + " 次";
             _detailLabel.Text = detail;
+
+            if (_dismissedCurrentNotice) return;
 
             _pulse = false;
             ApplyColors();
@@ -153,6 +157,14 @@ namespace EmergencyLink.Forms
         {
             _currentBatchId = "";
             _lastCount = 0;
+            _dismissedCurrentNotice = false;
+            _pulseTimer.Stop();
+            Hide();
+        }
+
+        private void DismissNotice()
+        {
+            _dismissedCurrentNotice = true;
             _pulseTimer.Stop();
             Hide();
         }

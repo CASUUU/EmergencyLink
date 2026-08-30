@@ -516,12 +516,23 @@ namespace EmergencyLink
                 return;
             }
 
+            bool quotaSettled = false;
+            bool overLimitApproval = false;
             lock (_sync)
             {
                 batch.AckBy = session.Name;
                 batch.AckAt = DateTime.Now;
+                if (session.Role == RoleNames.Player && batch.Type == AlertTypes.Official && batch.Status != BatchStatus.Closed)
+                {
+                    quotaSettled = TrySettleOfficialCallUnsafe(batch, out overLimitApproval);
+                }
             }
-            Log("选手回执：" + session.Name + " 已收到批次 " + batch.Id);
+            string suffix = "";
+            if (quotaSettled)
+            {
+                suffix = overLimitApproval ? "，已记录超额连麦" : "，已扣减一次连麦额度";
+            }
+            Log("选手回执：" + session.Name + " 已收到批次 " + batch.Id + suffix);
             BroadcastState();
         }
 
@@ -555,15 +566,11 @@ namespace EmergencyLink
                     return;
                 }
 
-                overLimitApproval = GetRemainingCallsUnsafe() <= 0;
-                batch.IsOverLimit = batch.IsOverLimit || overLimitApproval;
                 batch.Status = BatchStatus.Approved;
                 batch.ApprovedBy = session.Name;
                 batch.ApprovedByRole = session.Role;
                 batch.ApprovedAt = DateTime.Now;
-
-                if (overLimitApproval) _overLimitApprovals++;
-                else _usedOfficialCalls++;
+                TrySettleOfficialCallUnsafe(batch, out overLimitApproval);
             }
 
             if (session.Role == RoleNames.Manager)
@@ -575,6 +582,21 @@ namespace EmergencyLink
                 Log("主办方同意：" + session.Name + "，批次 " + batch.Id + (overLimitApproval ? "，超额批准" : ""));
             }
             BroadcastState();
+        }
+
+        private bool TrySettleOfficialCallUnsafe(AlertBatch batch, out bool overLimitApproval)
+        {
+            overLimitApproval = false;
+            if (batch == null || batch.Type != AlertTypes.Official || batch.QuotaSettled) return false;
+
+            overLimitApproval = GetRemainingCallsUnsafe() <= 0;
+            batch.IsOverLimit = batch.IsOverLimit || overLimitApproval;
+            batch.QuotaSettled = true;
+
+            if (overLimitApproval) _overLimitApprovals++;
+            else _usedOfficialCalls++;
+
+            return true;
         }
 
         private void HandleCloseBatch(ClientSession session, Dictionary<string, string> fields)

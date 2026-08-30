@@ -23,6 +23,7 @@ namespace EmergencyLink.Forms
         private bool _isConnecting;
         private bool _playerOverlayHiddenByUser;
         private readonly List<AlertView> _currentBatches = new List<AlertView>();
+        private readonly List<string> _recentLogLines = new List<string>();
 
         private TextBox _serverRoom;
         private TextBox _serverPassword;
@@ -135,7 +136,14 @@ namespace EmergencyLink.Forms
             {
                 BuildServerGroup(top);
             }
-            BuildConnectGroup(top, canHost);
+            if (_startupRole == RoleNames.Manager)
+            {
+                BuildManagerStatusGroup(top);
+            }
+            else
+            {
+                BuildConnectGroup(top, canHost);
+            }
 
             _tabs = new TabControl();
             _tabs.Dock = DockStyle.Fill;
@@ -270,6 +278,30 @@ namespace EmergencyLink.Forms
             }
         }
 
+        private void BuildManagerStatusGroup(Control parent)
+        {
+            GroupBox statusGroup = new GroupBox();
+            statusGroup.Text = "本机管理连接";
+            statusGroup.SetBounds(530, 10, 505, 185);
+            statusGroup.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
+            parent.Controls.Add(statusGroup);
+
+            _displayName = AddTextBox(statusGroup, "显示名称", 20, 32, "管理者-本机");
+            _displayName.Width = 170;
+            AddRoleLabel(statusGroup, 245, 36);
+
+            _connectionStatusLabel = new Label();
+            _connectionStatusLabel.Text = "未连接";
+            _connectionStatusLabel.SetBounds(20, 82, 420, 24);
+            statusGroup.Controls.Add(_connectionStatusLabel);
+
+            _disconnectButton = new Button();
+            _disconnectButton.Text = "断开本机连接";
+            _disconnectButton.SetBounds(20, 122, 130, 30);
+            _disconnectButton.Click += delegate { DisconnectClient(); };
+            statusGroup.Controls.Add(_disconnectButton);
+        }
+
         private void AddRoleLabel(Control parent, int x, int y)
         {
             Label roleLabel = new Label();
@@ -372,7 +404,7 @@ namespace EmergencyLink.Forms
             Label note = new Label();
             note.Anchor = AnchorStyles.Top | AnchorStyles.Right;
             note.SetBounds(820, 270, 190, 130);
-            note.Text = "比赛中：测试通讯关闭。\r\n正式请求同意后立即扣次。\r\n剩余为 0 时仍可同意，记录为超额批准。\r\n管理者同意会记录为代审批。";
+            note.Text = "比赛中：测试通讯关闭。\r\n选手回执正式请求后立即扣次。\r\n剩余为 0 时记录为超额连麦。\r\n管理者同意会记录为代审批。";
             tab.Controls.Add(note);
 
             return tab;
@@ -502,7 +534,7 @@ namespace EmergencyLink.Forms
             _logBox.BorderStyle = BorderStyle.FixedSingle;
             _logBox.BackColor = Color.White;
             _logBox.WordWrap = false;
-            _logBox.ScrollBars = RichTextBoxScrollBars.Vertical;
+            _logBox.ScrollBars = RichTextBoxScrollBars.ForcedVertical;
             _logBox.SetBounds(400, 44, 600, 405);
             _logBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
             tab.Controls.Add(_logBox);
@@ -537,13 +569,13 @@ namespace EmergencyLink.Forms
                 _server.Start(config);
                 _serverAddressLabel.Text = "当前房间：" + config.RoomName + "\r\n地址：" + NetUtil.GetLocalIpSummary(_server.ActualPort) + "\r\nAPI：http://127.0.0.1:" + _server.ActualApiPort.ToString() + "/status";
                 SetServerInputsEnabled(false);
-                _connectHost.Text = "127.0.0.1";
-                _connectPort.Value = _server.ActualPort;
-                _connectRoom.Text = config.RoomName;
-                _connectPassword.Text = config.Password;
+                if (_connectHost != null) _connectHost.Text = "127.0.0.1";
+                if (_connectPort != null) _connectPort.Value = _server.ActualPort;
+                if (_connectRoom != null) _connectRoom.Text = config.RoomName;
+                if (_connectPassword != null) _connectPassword.Text = config.Password;
 
                 string localName = hostRole == RoleNames.Manager ? "管理者-本机" : "主办方-本机";
-                _displayName.Text = localName;
+                if (_displayName != null) _displayName.Text = localName;
                 Connect("127.0.0.1", _server.ActualPort, config.RoomName, config.Password, localName, hostRole);
             }
             catch (Exception ex)
@@ -746,6 +778,12 @@ namespace EmergencyLink.Forms
 
         private void UpdateBatches(string batchesText)
         {
+            string selectedId = "";
+            AlertView selectedBatch = GetSelectedBatch();
+            if (selectedBatch != null) selectedId = selectedBatch.Id;
+            AlertView batchToSelect = null;
+            AlertView latestActiveOfficial = null;
+
             _currentBatches.Clear();
             if (_batchList != null) _batchList.Items.Clear();
             string[] records = Protocol.SplitRecords(batchesText);
@@ -765,6 +803,23 @@ namespace EmergencyLink.Forms
                 view.Initiators = units[9];
                 _currentBatches.Add(view);
                 if (_batchList != null) _batchList.Items.Add(view);
+                if (!String.IsNullOrEmpty(selectedId) && view.Id == selectedId) batchToSelect = view;
+                if (latestActiveOfficial == null && view.Type == AlertTypes.Official && view.Status == BatchStatus.Active)
+                {
+                    latestActiveOfficial = view;
+                }
+            }
+
+            if (_batchList != null)
+            {
+                if (batchToSelect != null)
+                {
+                    _batchList.SelectedItem = batchToSelect;
+                }
+                else if (latestActiveOfficial != null)
+                {
+                    _batchList.SelectedItem = latestActiveOfficial;
+                }
             }
 
             UpdateTeammateStatus();
@@ -794,17 +849,6 @@ namespace EmergencyLink.Forms
             if (_currentRole == RoleNames.Teammate && _teammateStatusLabel != null)
             {
                 _teammateStatusLabel.Text = "提醒已发出/合并，等待选手回执和主办方处理";
-            }
-            if (RoleNames.CanApprove(_currentRole) && type == AlertTypes.Official)
-            {
-                AlertView notice = new AlertView();
-                notice.Id = batch;
-                notice.Type = type;
-                notice.Target = target;
-                notice.Count = count;
-                notice.IsOverLimit = overLimit;
-                notice.Status = BatchStatus.Active;
-                if (_organizerNotice != null) _organizerNotice.ShowNotice(notice, _currentRemainingCalls);
             }
             RefreshRoleUi();
         }
@@ -910,12 +954,30 @@ namespace EmergencyLink.Forms
             return _batchList.SelectedItem as AlertView;
         }
 
+        private AlertView GetLatestActiveOfficialBatch()
+        {
+            for (int i = 0; i < _currentBatches.Count; i++)
+            {
+                AlertView batch = _currentBatches[i];
+                if (batch.Type == AlertTypes.Official && batch.Status == BatchStatus.Active)
+                {
+                    return batch;
+                }
+            }
+            return null;
+        }
+
         private void ApproveSelectedBatch()
         {
             AlertView batch = GetSelectedBatch();
             if (batch == null)
             {
-                MessageBox.Show("请先选择一个正式请求。");
+                batch = GetLatestActiveOfficialBatch();
+                if (batch != null && _batchList != null) _batchList.SelectedItem = batch;
+            }
+            if (batch == null)
+            {
+                MessageBox.Show("当前没有待同意的正式请求。");
                 return;
             }
             if (batch.Type != AlertTypes.Official)
@@ -924,7 +986,7 @@ namespace EmergencyLink.Forms
                 return;
             }
 
-            string text = batch.IsOverLimit ? "这是超额紧急请求，确认同意并记录超额批准？" : "确认同意该正式连麦请求并立即扣减一次？";
+            string text = batch.IsOverLimit ? "这是超额紧急请求，确认同意并记录超额批准？" : "确认同意该正式连麦请求？若尚未扣减，将扣减一次。";
             if (MessageBox.Show(text, "确认同意", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
 
             Dictionary<string, string> message = new Dictionary<string, string>();
@@ -979,6 +1041,7 @@ namespace EmergencyLink.Forms
                 return;
             }
             if (String.IsNullOrEmpty(line)) return;
+            if (IsRecentDuplicateLogLine(line)) return;
             if (_logBox != null)
             {
                 _logBox.AppendText(line + Environment.NewLine);
@@ -986,6 +1049,18 @@ namespace EmergencyLink.Forms
                 _logBox.SelectionLength = 0;
                 _logBox.ScrollToCaret();
             }
+        }
+
+        private bool IsRecentDuplicateLogLine(string line)
+        {
+            for (int i = 0; i < _recentLogLines.Count; i++)
+            {
+                if (_recentLogLines[i] == line) return true;
+            }
+
+            _recentLogLines.Add(line);
+            if (_recentLogLines.Count > 200) _recentLogLines.RemoveAt(0);
+            return false;
         }
 
         private void SafeSetConnectionStatus(string text)
@@ -1002,16 +1077,7 @@ namespace EmergencyLink.Forms
         {
             if (!RoleNames.CanApprove(_currentRole) || _organizerNotice == null) return;
 
-            AlertView latestActiveOfficial = null;
-            for (int i = 0; i < _currentBatches.Count; i++)
-            {
-                AlertView batch = _currentBatches[i];
-                if (batch.Type == AlertTypes.Official && batch.Status == BatchStatus.Active)
-                {
-                    latestActiveOfficial = batch;
-                    break;
-                }
-            }
+            AlertView latestActiveOfficial = GetLatestActiveOfficialBatch();
 
             if (latestActiveOfficial == null)
             {
