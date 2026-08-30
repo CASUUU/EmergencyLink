@@ -69,7 +69,8 @@ namespace EmergencyLink.Forms
         private Label _teammateStatusLabel;
 
         private TextBox _membersBox;
-        private RichTextBox _logBox;
+        private TextBox _logBox;
+        private CheckBox _logAutoScrollCheckBox;
 
         public MainForm(string startupRole)
         {
@@ -108,6 +109,18 @@ namespace EmergencyLink.Forms
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
+            if (e.CloseReason == CloseReason.UserClosing && HasActiveConnectionOrServer())
+            {
+                string message = _server != null
+                    ? "关闭软件会断开当前连接并停止本机服务器，确认退出？"
+                    : "关闭软件会断开当前连接，确认退出？";
+                if (!ConfirmDangerousAction(message, "确认退出"))
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
+
             if (_client != null) _client.Close();
             if (_server != null) _server.Stop();
             if (_overlay != null) _overlay.Close();
@@ -199,7 +212,8 @@ namespace EmergencyLink.Forms
             _stopServerButton = new Button();
             _stopServerButton.Text = "停止服务器";
             _stopServerButton.SetBounds(20, 136, 100, 28);
-            _stopServerButton.Click += delegate { StopLocalServer(); };
+            _stopServerButton.Enabled = false;
+            _stopServerButton.Click += delegate { RequestStopLocalServer(); };
             serverGroup.Controls.Add(_stopServerButton);
 
             _serverAddressLabel = new Label();
@@ -234,7 +248,7 @@ namespace EmergencyLink.Forms
                 _disconnectButton = new Button();
                 _disconnectButton.Text = "断开";
                 _disconnectButton.SetBounds(116, 136, 90, 30);
-                _disconnectButton.Click += delegate { DisconnectClient(); };
+                _disconnectButton.Click += delegate { RequestDisconnectClient(); };
                 connectGroup.Controls.Add(_disconnectButton);
 
                 _connectionStatusLabel = new Label();
@@ -268,7 +282,7 @@ namespace EmergencyLink.Forms
                 _disconnectButton = new Button();
                 _disconnectButton.Text = "断开";
                 _disconnectButton.SetBounds(228, 150, 96, 30);
-                _disconnectButton.Click += delegate { DisconnectClient(); };
+                _disconnectButton.Click += delegate { RequestDisconnectClient(); };
                 connectGroup.Controls.Add(_disconnectButton);
 
                 _connectionStatusLabel = new Label();
@@ -298,7 +312,7 @@ namespace EmergencyLink.Forms
             _disconnectButton = new Button();
             _disconnectButton.Text = "断开本机连接";
             _disconnectButton.SetBounds(20, 122, 130, 30);
-            _disconnectButton.Click += delegate { DisconnectClient(); };
+            _disconnectButton.Click += delegate { RequestDisconnectClient(); };
             statusGroup.Controls.Add(_disconnectButton);
         }
 
@@ -510,34 +524,73 @@ namespace EmergencyLink.Forms
         {
             TabPage tab = new TabPage("现场状态/日志");
 
+            TableLayoutPanel layout = new TableLayoutPanel();
+            layout.Dock = DockStyle.Fill;
+            layout.Padding = new Padding(20, 18, 20, 18);
+            layout.ColumnCount = 2;
+            layout.RowCount = 2;
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 360F));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 26F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            tab.Controls.Add(layout);
+
             Label membersLabel = new Label();
             membersLabel.Text = "在线成员";
-            membersLabel.SetBounds(20, 18, 100, 22);
-            tab.Controls.Add(membersLabel);
+            membersLabel.Dock = DockStyle.Fill;
+            membersLabel.TextAlign = ContentAlignment.MiddleLeft;
+            layout.Controls.Add(membersLabel, 0, 0);
+
+            TableLayoutPanel logHeader = new TableLayoutPanel();
+            logHeader.Dock = DockStyle.Fill;
+            logHeader.Margin = new Padding(16, 0, 0, 0);
+            logHeader.ColumnCount = 2;
+            logHeader.RowCount = 1;
+            logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            logHeader.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            logHeader.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.Controls.Add(logHeader, 1, 0);
+
+            Label logLabel = new Label();
+            logLabel.Text = "日志";
+            logLabel.Dock = DockStyle.Fill;
+            logLabel.TextAlign = ContentAlignment.MiddleLeft;
+            logHeader.Controls.Add(logLabel, 0, 0);
+
+            _logAutoScrollCheckBox = new CheckBox();
+            _logAutoScrollCheckBox.Text = "自动滚动到最新";
+            _logAutoScrollCheckBox.Checked = true;
+            _logAutoScrollCheckBox.AutoSize = true;
+            _logAutoScrollCheckBox.Anchor = AnchorStyles.Right;
+            _logAutoScrollCheckBox.CheckedChanged += delegate
+            {
+                if (ShouldAutoScrollLog()) ScrollLogToEnd();
+            };
+            logHeader.Controls.Add(_logAutoScrollCheckBox, 1, 0);
 
             _membersBox = new TextBox();
             _membersBox.Multiline = true;
             _membersBox.ReadOnly = true;
             _membersBox.ScrollBars = ScrollBars.Vertical;
-            _membersBox.SetBounds(20, 44, 360, 405);
-            _membersBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Bottom;
-            tab.Controls.Add(_membersBox);
+            _membersBox.Dock = DockStyle.Fill;
+            _membersBox.Margin = new Padding(0, 0, 16, 0);
+            layout.Controls.Add(_membersBox, 0, 1);
 
-            Label logLabel = new Label();
-            logLabel.Text = "日志";
-            logLabel.SetBounds(400, 18, 100, 22);
-            tab.Controls.Add(logLabel);
-
-            _logBox = new RichTextBox();
+            _logBox = new TextBox();
             _logBox.Multiline = true;
             _logBox.ReadOnly = true;
             _logBox.BorderStyle = BorderStyle.FixedSingle;
             _logBox.BackColor = Color.White;
             _logBox.WordWrap = false;
-            _logBox.ScrollBars = RichTextBoxScrollBars.ForcedVertical;
-            _logBox.SetBounds(400, 44, 600, 405);
-            _logBox.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom;
-            tab.Controls.Add(_logBox);
+            _logBox.ScrollBars = ScrollBars.Both;
+            _logBox.Dock = DockStyle.Fill;
+            _logBox.Margin = new Padding(16, 0, 0, 0);
+            layout.Controls.Add(_logBox, 1, 1);
+
+            tab.Enter += delegate
+            {
+                if (ShouldAutoScrollLog()) ScrollLogToEnd();
+            };
 
             return tab;
         }
@@ -597,6 +650,18 @@ namespace EmergencyLink.Forms
             SafeAppendLog(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " | 本机服务器已停止");
         }
 
+        private void RequestStopLocalServer()
+        {
+            if (_server == null)
+            {
+                MessageBox.Show("本机服务器未启动。", "EmergencyLink");
+                return;
+            }
+
+            if (!ConfirmDangerousAction("停止服务器会断开本机和所有已连接客户端，确认停止？", "确认停止服务器")) return;
+            StopLocalServer();
+        }
+
         private void SetServerInputsEnabled(bool enabled)
         {
             if (_serverRoom != null) _serverRoom.Enabled = enabled;
@@ -606,6 +671,7 @@ namespace EmergencyLink.Forms
             if (_serverBatchSeconds != null) _serverBatchSeconds.Enabled = enabled;
             if (_startOrganizerServerButton != null) _startOrganizerServerButton.Enabled = enabled;
             if (_startManagerServerButton != null) _startManagerServerButton.Enabled = enabled;
+            if (_stopServerButton != null) _stopServerButton.Enabled = !enabled;
         }
 
         private void ConnectAsSelectedRole()
@@ -688,6 +754,34 @@ namespace EmergencyLink.Forms
             if (_organizerNotice != null) _organizerNotice.ClearNotice();
             SafeSetConnectionStatus("未连接");
             RefreshRoleUi();
+        }
+
+        private void RequestDisconnectClient()
+        {
+            if (!HasActiveClient())
+            {
+                DisconnectClient();
+                return;
+            }
+
+            if (!ConfirmDangerousAction("断开后需要重新连接房间，确认断开？", "确认断开连接")) return;
+            DisconnectClient();
+        }
+
+        private bool HasActiveClient()
+        {
+            return _client != null && (_client.IsConnected || _isConnecting);
+        }
+
+        private bool HasActiveConnectionOrServer()
+        {
+            return _server != null || HasActiveClient();
+        }
+
+        private bool ConfirmDangerousAction(string message, string caption)
+        {
+            return MessageBox.Show(this, message, caption, MessageBoxButtons.OKCancel,
+                MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.OK;
         }
 
         private void OnClientMessage(Dictionary<string, string> message)
@@ -1044,11 +1138,39 @@ namespace EmergencyLink.Forms
             if (IsRecentDuplicateLogLine(line)) return;
             if (_logBox != null)
             {
-                _logBox.AppendText(line + Environment.NewLine);
-                _logBox.SelectionStart = _logBox.TextLength;
-                _logBox.SelectionLength = 0;
-                _logBox.ScrollToCaret();
+                bool separateServerStatus = ShouldSeparateServerStatusLog(line);
+                if (separateServerStatus) AppendLogBoxLine("======== 服务器状态 ========");
+                AppendLogBoxLine(line);
+                if (separateServerStatus) AppendLogBoxLine("======== 服务器状态 ========");
+                if (ShouldAutoScrollLog()) ScrollLogToEnd();
             }
+        }
+
+        private void AppendLogBoxLine(string line)
+        {
+            if (_logBox.TextLength > 0) _logBox.AppendText(Environment.NewLine);
+            _logBox.AppendText(line);
+        }
+
+        private bool ShouldSeparateServerStatusLog(string line)
+        {
+            if (_startupRole != RoleNames.Manager) return false;
+            return line.IndexOf("服务器已启动", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("服务器已停止", StringComparison.Ordinal) >= 0 ||
+                line.IndexOf("服务器监听异常", StringComparison.Ordinal) >= 0;
+        }
+
+        private bool ShouldAutoScrollLog()
+        {
+            return _logAutoScrollCheckBox == null || _logAutoScrollCheckBox.Checked;
+        }
+
+        private void ScrollLogToEnd()
+        {
+            if (_logBox == null) return;
+            _logBox.SelectionStart = _logBox.TextLength;
+            _logBox.SelectionLength = 0;
+            _logBox.ScrollToCaret();
         }
 
         private bool IsRecentDuplicateLogLine(string line)
