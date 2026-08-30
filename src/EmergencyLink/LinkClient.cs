@@ -26,10 +26,19 @@ namespace EmergencyLink
 
         public void Connect(string host, int port, string roomName, string password, string displayName, string role)
         {
-            Close();
+            CloseInternal(false);
 
             _tcpClient = new TcpClient();
-            _tcpClient.Connect(host, port);
+            IAsyncResult connectResult = _tcpClient.BeginConnect(host, port, null, null);
+            bool connected = connectResult.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(4));
+            if (!connected)
+            {
+                try { _tcpClient.Close(); }
+                catch { }
+                throw new TimeoutException("连接超时，请检查服务器地址、端口或防火墙设置。");
+            }
+            _tcpClient.EndConnect(connectResult);
+            connectResult.AsyncWaitHandle.Close();
             NetworkStream stream = _tcpClient.GetStream();
             _reader = new StreamReader(stream, Encoding.UTF8);
             _writer = new StreamWriter(stream, new UTF8Encoding(false));
@@ -60,6 +69,11 @@ namespace EmergencyLink
 
         public void Close()
         {
+            CloseInternal(true);
+        }
+
+        private void CloseInternal(bool notify)
+        {
             _running = false;
             try
             {
@@ -72,7 +86,7 @@ namespace EmergencyLink
             _reader = null;
             _writer = null;
             _tcpClient = null;
-            OnStatus("未连接");
+            if (notify) OnStatus("未连接");
         }
 
         private void ListenLoop()

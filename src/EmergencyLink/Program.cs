@@ -11,15 +11,88 @@ namespace EmergencyLink
         [STAThread]
         private static int Main(string[] args)
         {
-            if (args != null && args.Length > 0 && args[0] == "--self-test")
+            try
             {
-                return SelfTest.Run();
-            }
+                if (args != null && args.Length > 0 && args[0] == "--self-test")
+                {
+                    return SelfTest.Run();
+                }
+                if (args != null && args.Length > 0 && args[0] == "--form-smoke-test")
+                {
+                    return FormSmokeTest.Run();
+                }
 
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm());
-            return 0;
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+
+                string selectedRole;
+                using (RoleSelectionForm roleForm = new RoleSelectionForm())
+                {
+                    if (roleForm.ShowDialog() != DialogResult.OK) return 0;
+                    selectedRole = roleForm.SelectedRole;
+                }
+
+                Application.Run(new MainForm(selectedRole));
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                StartupLog.Write(ex);
+                try { MessageBox.Show("软件启动失败：" + ex.Message + "\r\n详情已写入启动日志。", "EmergencyLink"); }
+                catch { }
+                return 1;
+            }
+        }
+    }
+
+    internal static class StartupLog
+    {
+        public static void Write(Exception ex)
+        {
+            try
+            {
+                string root = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Data");
+                System.IO.Directory.CreateDirectory(root);
+                string file = System.IO.Path.Combine(root, "startup-error.log");
+                System.IO.File.AppendAllText(file, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + Environment.NewLine + ex.ToString() + Environment.NewLine, System.Text.Encoding.UTF8);
+            }
+            catch
+            {
+            }
+        }
+    }
+
+    internal static class FormSmokeTest
+    {
+        public static int Run()
+        {
+            try
+            {
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+
+                using (RoleSelectionForm roleForm = new RoleSelectionForm())
+                {
+                }
+                using (MainForm manager = new MainForm(RoleNames.Manager))
+                {
+                }
+                using (MainForm organizer = new MainForm(RoleNames.Organizer))
+                {
+                }
+                using (MainForm player = new MainForm(RoleNames.Player))
+                {
+                }
+                using (MainForm teammate = new MainForm(RoleNames.Teammate))
+                {
+                }
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                StartupLog.Write(ex);
+                return 1;
+            }
         }
     }
 
@@ -33,7 +106,7 @@ namespace EmergencyLink
             LinkClient teammate = null;
 
             AutoResetEvent playerAlerted = new AutoResetEvent(false);
-            AutoResetEvent approvedSeen = new AutoResetEvent(false);
+            AutoResetEvent remainingDeducted = new AutoResetEvent(false);
             string alertBatch = "";
 
             try
@@ -73,9 +146,12 @@ namespace EmergencyLink
 
                 organizer.MessageReceived += delegate(Dictionary<string, string> message)
                 {
-                    if (Protocol.Get(message, "cmd") == "state" && Protocol.Get(message, "batches").IndexOf("approved") >= 0)
+                    if (Protocol.Get(message, "cmd") == "state" &&
+                        Protocol.Get(message, "batches").IndexOf("approved") >= 0 &&
+                        Protocol.GetInt(message, "remaining", -1) == 0 &&
+                        Protocol.GetInt(message, "usedOfficial", -1) == 1)
                     {
-                        approvedSeen.Set();
+                        remainingDeducted.Set();
                     }
                 };
 
@@ -105,7 +181,14 @@ namespace EmergencyLink
                 approve["batch"] = alertBatch;
                 organizer.Send(approve);
 
-                if (!approvedSeen.WaitOne(3000)) return 3;
+                if (!remainingDeducted.WaitOne(3000)) return 3;
+
+                using (System.Net.WebClient webClient = new System.Net.WebClient())
+                {
+                    webClient.Encoding = System.Text.Encoding.UTF8;
+                    string json = webClient.DownloadString("http://127.0.0.1:" + server.ActualApiPort.ToString() + "/status");
+                    if (json.IndexOf("\"remainingOfficialCalls\":0") < 0) return 4;
+                }
                 return 0;
             }
             catch

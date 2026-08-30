@@ -36,8 +36,11 @@ namespace EmergencyLink
         private readonly List<ClientSession> _clients = new List<ClientSession>();
         private readonly List<AlertBatch> _batches = new List<AlertBatch>();
         private TcpListener _listener;
+        private TcpListener _apiListener;
         private Thread _acceptThread;
+        private Thread _apiThread;
         private bool _running;
+        private bool _apiRunning;
         private AppConfig _config;
         private int _usedOfficialCalls;
         private int _overLimitApprovals;
@@ -45,6 +48,7 @@ namespace EmergencyLink
         public event Action<string> LogCreated;
         public string Phase;
         public int ActualPort;
+        public int ActualApiPort;
 
         public EmergencyServer()
         {
@@ -70,15 +74,25 @@ namespace EmergencyLink
             _acceptThread.IsBackground = true;
             _acceptThread.Start();
 
+            StartDeveloperApi(ActualPort + 1);
+
             Log("服务器已启动，房间 " + _config.RoomName + "，端口 " + ActualPort.ToString());
         }
 
         public void Stop()
         {
             _running = false;
+            _apiRunning = false;
             try
             {
                 if (_listener != null) _listener.Stop();
+            }
+            catch
+            {
+            }
+            try
+            {
+                if (_apiListener != null) _apiListener.Stop();
             }
             catch
             {
@@ -95,6 +109,138 @@ namespace EmergencyLink
             }
 
             _listener = null;
+            _apiListener = null;
+            ActualApiPort = 0;
+        }
+
+        private void StartDeveloperApi(int preferredPort)
+        {
+            _apiRunning = false;
+            _apiListener = null;
+            ActualApiPort = 0;
+
+            for (int port = preferredPort; port < preferredPort + 20; port++)
+            {
+                try
+                {
+                    _apiListener = new TcpListener(IPAddress.Any, port);
+                    _apiListener.Start();
+                    ActualApiPort = ((IPEndPoint)_apiListener.LocalEndpoint).Port;
+                    _apiRunning = true;
+                    _apiThread = new Thread(ApiLoop);
+                    _apiThread.IsBackground = true;
+                    _apiThread.Start();
+                    Log("开发者 API 已启动，端口 " + ActualApiPort.ToString() + "，状态接口 /status");
+                    return;
+                }
+                catch
+                {
+                    try
+                    {
+                        if (_apiListener != null) _apiListener.Stop();
+                    }
+                    catch
+                    {
+                    }
+                    _apiListener = null;
+                }
+            }
+
+            Log("开发者 API 未启动：未找到可用端口");
+        }
+
+        private void ApiLoop()
+        {
+            while (_apiRunning)
+            {
+                try
+                {
+                    TcpClient tcp = _apiListener.AcceptTcpClient();
+                    Thread thread = new Thread(delegate() { HandleApiClient(tcp); });
+                    thread.IsBackground = true;
+                    thread.Start();
+                }
+                catch (SocketException)
+                {
+                    if (_apiRunning) Log("开发者 API 监听异常");
+                }
+                catch (ObjectDisposedException)
+                {
+                }
+            }
+        }
+
+        private void HandleApiClient(TcpClient tcp)
+        {
+            try
+            {
+                tcp.ReceiveTimeout = 2000;
+                tcp.SendTimeout = 2000;
+                using (NetworkStream stream = tcp.GetStream())
+                using (StreamReader reader = new StreamReader(stream, Encoding.ASCII))
+                {
+                    string requestLine = reader.ReadLine();
+                    while (true)
+                    {
+                        string header = reader.ReadLine();
+                        if (String.IsNullOrEmpty(header)) break;
+                    }
+
+                    string path = "/";
+                    if (!String.IsNullOrEmpty(requestLine))
+                    {
+                        string[] parts = requestLine.Split(' ');
+                        if (parts.Length >= 2) path = parts[1];
+                    }
+
+                    string body;
+                    string contentType;
+                    int statusCode;
+                    string statusText;
+
+                    if (path.StartsWith("/status", StringComparison.OrdinalIgnoreCase))
+                    {
+                        body = BuildStatusJson();
+                        contentType = "application/json; charset=utf-8";
+                        statusCode = 200;
+                        statusText = "OK";
+                    }
+                    else if (path.StartsWith("/health", StringComparison.OrdinalIgnoreCase))
+                    {
+                        body = "{\"ok\":true}";
+                        contentType = "application/json; charset=utf-8";
+                        statusCode = 200;
+                        statusText = "OK";
+                    }
+                    else
+                    {
+                        body = "EmergencyLink developer API\r\nGET /status\r\nGET /health\r\n";
+                        contentType = "text/plain; charset=utf-8";
+                        statusCode = 200;
+                        statusText = "OK";
+                    }
+
+                    byte[] bytes = Encoding.UTF8.GetBytes(body);
+                    string headers =
+                        "HTTP/1.1 " + statusCode.ToString() + " " + statusText + "\r\n" +
+                        "Content-Type: " + contentType + "\r\n" +
+                        "Cache-Control: no-store\r\n" +
+                        "Access-Control-Allow-Origin: *\r\n" +
+                        "Content-Length: " + bytes.Length.ToString() + "\r\n" +
+                        "Connection: close\r\n\r\n";
+                    byte[] headerBytes = Encoding.ASCII.GetBytes(headers);
+                    stream.Write(headerBytes, 0, headerBytes.Length);
+                    stream.Write(bytes, 0, bytes.Length);
+                }
+            }
+            catch
+            {
+            }
+            finally
+            {
+                try { tcp.Close(); }
+                catch { }
+            }
         }
 
         private void AcceptLoop()
@@ -580,6 +726,116 @@ namespace EmergencyLink
             message["players"] = String.Join(Protocol.UnitSeparator, players.ToArray());
             message["batches"] = String.Join(Protocol.RecordSeparator, batchRecords.ToArray());
             return message;
+        }
+
+        public string BuildStatusJson()
+        {
+            StringBuilder json = new StringBuilder();
+            lock (_sync)
+            {
+                json.Append("{");
+                AppendJsonProperty(json, "room", _config.RoomName, true);
+                AppendJsonProperty(json, "phase", Phase, false);
+                AppendJsonProperty(json, "phaseText", PhaseNames.Display(Phase), false);
+                AppendJsonProperty(json, "maxOfficialCalls", _config.MaxOfficialCalls, false);
+                AppendJsonProperty(json, "usedOfficialCalls", _usedOfficialCalls, false);
+                AppendJsonProperty(json, "remainingOfficialCalls", GetRemainingCallsUnsafe(), false);
+                AppendJsonProperty(json, "overLimitApprovals", _overLimitApprovals, false);
+                AppendJsonProperty(json, "batchWindowSeconds", _config.BatchWindowSeconds, false);
+                AppendJsonProperty(json, "serverPort", ActualPort, false);
+                AppendJsonProperty(json, "apiPort", ActualApiPort, false);
+
+                json.Append(",\"members\":[");
+                bool firstMember = true;
+                for (int i = 0; i < _clients.Count; i++)
+                {
+                    ClientSession client = _clients[i];
+                    if (!client.Joined) continue;
+                    if (!firstMember) json.Append(",");
+                    firstMember = false;
+                    json.Append("{");
+                    AppendJsonProperty(json, "name", client.Name, true);
+                    AppendJsonProperty(json, "role", client.Role, false);
+                    AppendJsonProperty(json, "roleText", RoleNames.Display(client.Role), false);
+                    AppendJsonProperty(json, "lastSeen", client.LastSeen.ToString("yyyy-MM-dd HH:mm:ss"), false);
+                    json.Append("}");
+                }
+                json.Append("]");
+
+                json.Append(",\"batches\":[");
+                bool firstBatch = true;
+                for (int i = _batches.Count - 1; i >= 0; i--)
+                {
+                    AlertBatch batch = _batches[i];
+                    if (!firstBatch) json.Append(",");
+                    firstBatch = false;
+                    json.Append("{");
+                    AppendJsonProperty(json, "id", batch.Id, true);
+                    AppendJsonProperty(json, "type", batch.Type, false);
+                    AppendJsonProperty(json, "typeText", AlertTypes.Display(batch.Type), false);
+                    AppendJsonProperty(json, "target", batch.Target, false);
+                    AppendJsonProperty(json, "status", batch.Status, false);
+                    AppendJsonProperty(json, "statusText", BatchStatus.Display(batch.Status), false);
+                    AppendJsonProperty(json, "count", batch.Count, false);
+                    AppendJsonProperty(json, "initiators", String.Join(",", batch.Initiators.ToArray()), false);
+                    AppendJsonProperty(json, "ackBy", batch.AckBy ?? "", false);
+                    AppendJsonProperty(json, "approvedBy", batch.ApprovedBy ?? "", false);
+                    AppendJsonProperty(json, "isOverLimit", batch.IsOverLimit, false);
+                    AppendJsonProperty(json, "deliveredToPlayer", batch.DeliveredToPlayer, false);
+                    AppendJsonProperty(json, "createdAt", batch.CreatedAt.ToString("yyyy-MM-dd HH:mm:ss"), false);
+                    AppendJsonProperty(json, "updatedAt", batch.UpdatedAt.ToString("yyyy-MM-dd HH:mm:ss"), false);
+                    json.Append("}");
+                }
+                json.Append("]");
+                json.Append("}");
+            }
+            return json.ToString();
+        }
+
+        private static void AppendJsonProperty(StringBuilder json, string name, string value, bool first)
+        {
+            if (!first) json.Append(",");
+            json.Append("\"");
+            json.Append(JsonEscape(name));
+            json.Append("\":\"");
+            json.Append(JsonEscape(value));
+            json.Append("\"");
+        }
+
+        private static void AppendJsonProperty(StringBuilder json, string name, int value, bool first)
+        {
+            if (!first) json.Append(",");
+            json.Append("\"");
+            json.Append(JsonEscape(name));
+            json.Append("\":");
+            json.Append(value.ToString());
+        }
+
+        private static void AppendJsonProperty(StringBuilder json, string name, bool value, bool first)
+        {
+            if (!first) json.Append(",");
+            json.Append("\"");
+            json.Append(JsonEscape(name));
+            json.Append("\":");
+            json.Append(value ? "true" : "false");
+        }
+
+        private static string JsonEscape(string value)
+        {
+            if (String.IsNullOrEmpty(value)) return "";
+            StringBuilder escaped = new StringBuilder();
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if (c == '\\') escaped.Append("\\\\");
+                else if (c == '"') escaped.Append("\\\"");
+                else if (c == '\n') escaped.Append("\\n");
+                else if (c == '\r') escaped.Append("\\r");
+                else if (c == '\t') escaped.Append("\\t");
+                else if (c < 32) escaped.Append("\\u" + ((int)c).ToString("x4"));
+                else escaped.Append(c);
+            }
+            return escaped.ToString();
         }
 
         private void Broadcast(Dictionary<string, string> message)
